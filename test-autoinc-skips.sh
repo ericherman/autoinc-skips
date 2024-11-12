@@ -132,7 +132,6 @@ function run-sql()
 {
 	SQL=$1
 	SCHEMA=$2
-	BATCH=$3
 	if [ -z "$SCHEMA" ]; then
 		SCHEMA=$DB_SCHEMA_NAME
 	fi
