@@ -12,31 +12,67 @@ echo DB_PORT_EXTERNAL=$DB_PORT_EXTERNAL
 
 MARIADB_VERSION=10.6
 DB_SCHEMA_NAME=autoincskips
-DB_CONTAINER_NAME=${DB_SCHEMA_NAME}_${DB_PORT_EXTERNAL}_mariadb
-# echo "#    creating new password from /dev/urandom"
-DB_ROOT_PASSWORD=$(cat /dev/urandom \
+
+CONTAINER_DATA_DIR=/var/lib/mysql
+
+if [ -z "$BUILD_DIR" ]; then
+	BUILD_DIR=./build
+fi
+mkdir -pv $BUILD_DIR
+BUILD_DIR=$(readlink -f "$BUILD_DIR")
+
+if [ -z "$LOCAL_DATA_DIR" ]; then
+	LOCAL_DATA_DIR=$BUILD_DIR/mariadb-data
+fi
+mkdir -pv "$LOCAL_DATA_DIR"
+LOCAL_DATA_DIR=$(readlink -f "$LOCAL_DATA_DIR")
+
+DB_CONTAINER_NAME=${DB_SCHEMA_NAME}-mariadb
+DB_DEFAULTS_FILE=${DB_SCHEMA_NAME}.root.my.cnf
+LOCAL_DB_DEFAULTS_FILE=$LOCAL_DATA_DIR/$DB_DEFAULTS_FILE
+CONTAINER_DB_DEFAULTS_FILE=$CONTAINER_DATA_DIR/$DB_DEFAULTS_FILE
+
+if [ -e "$LOCAL_DB_DEFAULTS_FILE" ]; then
+	echo "Data dir already populated: $LOCAL_DATA_DIR"
+	DB_ROOT_PASSWORD=$(grep 'password=' \
+		"$LOCAL_DB_DEFAULTS_FILE" \
+		| cut -f2 -d'=' \
+		| xargs )
+else
+	# echo "#    creating new password from /dev/urandom"
+	DB_ROOT_PASSWORD=$(cat /dev/urandom \
 		| tr --delete --complement 'a-zA-Z0-9' \
-		| fold --width=32 \
-		| head --lines=1 \
+		| head --bytes=32 \
 		| xargs || true
-)
+	)
+	echo "LOCAL_DB_DEFAULTS_FILE: $LOCAL_DB_DEFAULTS_FILE"
+	cat > "$LOCAL_DB_DEFAULTS_FILE" <<- EOF
+	[client]
+	user=root
+	password=$DB_ROOT_PASSWORD
+	EOF
+fi
 DB_USER_NAME=$DB_SCHEMA_NAME
 DB_USER_PASSWORD=$DB_ROOT_PASSWORD
-DB_DEFAULTS_FILE=${DB_SCHEMA_NAME}.root.my.cnf
 
-rm -f ./container.env
-touch ./container.env
-chmod -v 600 ./container.env
-cat > container.env << EOF
+if [ -e $BUILD_DIR/container.env ]; then
+	mv -v	$BUILD_DIR/container.env \
+		$BUILD_DIR/container.env.old
+fi
+touch $BUILD_DIR/container.env
+chmod -v 600 $BUILD_DIR/container.env
+cat > $BUILD_DIR/container.env << EOF
 DB_PORT_EXTERNAL=$DB_PORT_EXTERNAL
 DB_SCHEMA_NAME=$DB_SCHEMA_NAME
 DB_CONTAINER_NAME=$DB_CONTAINER_NAME
 DB_ROOT_PASSWORD=$DB_ROOT_PASSWORD
 DB_USER_NAME=$DB_USER_NAME
-DB_USER_PASSWORD=$USER_PASSWORD
-DB_DEFAULTS_FILE=$DB_DEFAULTS_FILE
+DB_USER_PASSWORD=$DB_USER_PASSWORD
+
+LOCAL_DB_DEFAULTS_FILE=$LOCAL_DB_DEFAULTS_FILE
+CONTAINER_DB_DEFAULTS_FILE=$CONTAINER_DB_DEFAULTS_FILE
 EOF
-ls -l container.env
+ls -l $BUILD_DIR/container.env
 
 # echo "# check user '$USER' for group 'docker' membership"
 if groups | grep -q docker; then
@@ -58,6 +94,7 @@ docker stop ${DB_CONTAINER_NAME} 2>/dev/null || true
 # echo '# start db container'
 docker run -d \
 	-p 127.0.0.1:$DB_PORT_EXTERNAL:3306 \
+	--mount src="$LOCAL_DATA_DIR",target=$CONTAINER_DATA_DIR,type=bind \
 	--name $DB_CONTAINER_NAME \
 	--env MYSQL_DATABASE=$DB_SCHEMA_NAME \
 	--env MYSQL_USER=$DB_USER_NAME \
@@ -74,7 +111,7 @@ function cleanup-info()
 	# Connect to the database with:
 	#
 		 docker exec -it ${DB_CONTAINER_NAME} mariadb \\
-			  --defaults-file=/$DB_DEFAULTS_FILE \\
+			  --defaults-file=$CONTAINER_DB_DEFAULTS_FILE \\
 			  --host=127.0.0.1 \\
 			  --port=3306 \\
 			  $DB_SCHEMA_NAME
@@ -91,14 +128,6 @@ trap 'EXIT_CODE=$?; cleanup-info; exit $EXIT_CODE' EXIT
 
 # docker exec -it ${DB_CONTAINER_NAME} bash
 
-cat > $DB_DEFAULTS_FILE << EOF
-[client]
-user=root
-password=$DB_ROOT_PASSWORD
-EOF
-docker cp -L $DB_DEFAULTS_FILE ${DB_CONTAINER_NAME}:/$DB_DEFAULTS_FILE
-docker exec ${DB_CONTAINER_NAME} ls -l /$DB_DEFAULTS_FILE
-
 function run-sql()
 {
 	SQL=$1
@@ -110,7 +139,7 @@ function run-sql()
 	echo
 	echo "$SQL"
 	docker exec ${DB_CONTAINER_NAME} mariadb \
-		--defaults-file=/$DB_DEFAULTS_FILE \
+		--defaults-file=$CONTAINER_DB_DEFAULTS_FILE \
 		--host=127.0.0.1 \
 		--port=3306 \
 		$DB_SCHEMA_NAME \
@@ -122,9 +151,9 @@ function run-sql-file()
 	SQL_FILE=$1
 	BASE_SQL=$(basename $SQL_FILE)
 	echo "# $BASE_SQL"
-	docker cp -L $SQL_FILE ${DB_CONTAINER_NAME}:/$BASE_SQL
-	docker exec ${DB_CONTAINER_NAME} ls -l /$BASE_SQL
-	run-sql "source /$BASE_SQL"
+	docker cp -L $SQL_FILE ${DB_CONTAINER_NAME}:/tmp/$BASE_SQL
+	docker exec ${DB_CONTAINER_NAME} ls -l /tmp/$BASE_SQL
+	run-sql "source /tmp/$BASE_SQL"
 }
 
 RETRIES_LEFT=10
