@@ -151,8 +151,9 @@ function run-sql-file()
 	BASE_SQL=$(basename $SQL_FILE)
 	echo "# $BASE_SQL"
 	docker cp -L $SQL_FILE ${DB_CONTAINER_NAME}:/tmp/$BASE_SQL
-	docker exec ${DB_CONTAINER_NAME} ls -l /tmp/$BASE_SQL
+	# docker exec ${DB_CONTAINER_NAME} ls -l /tmp/$BASE_SQL
 	run-sql "source /tmp/$BASE_SQL"
+	docker exec ${DB_CONTAINER_NAME} rm -v /tmp/$BASE_SQL
 }
 
 RETRIES_LEFT=10
